@@ -28,7 +28,7 @@ class FocalLoss(nn.Module):
         return focal_loss(F.cross_entropy(input, target, reduction='none', weight=self.weight), self.gamma)
 
 class TrainRevision:
-    def __init__(self, model_name, model, train_loader, test_loader, device, epochs, save_path, threshold):
+    def __init__(self, model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, threshold_scheduler=None):
         self.model_name = model_name
         self.model = model
         self.train_loader = train_loader
@@ -37,6 +37,10 @@ class TrainRevision:
         self.epochs = epochs
         self.save_path = save_path
         self.threshold = threshold
+        self.threshold_scheduler = threshold_scheduler
+        self.val_loss_hist = []
+        self.grad_norm_hist = []
+        self.tau_hist = []
 
     def train_selective(self):
         self.model.to(self.device)
@@ -323,7 +327,18 @@ class TrainRevision:
         num_step = 0
         samples_used_per_epoch = []
         for epoch in range(self.epochs):
+            # Update dynamic threshold for DBPD
+            if self.threshold_scheduler is not None:
+                state = {
+                    "val_loss_hist": self.val_loss_hist,
+                    "grad_norm_hist": self.grad_norm_hist,
+                    "tau_hist": self.tau_hist,
+                }
+                self.threshold = self.threshold_scheduler(epoch, state)
+                self.tau_hist.append(self.threshold)
             samples_used = 0
+            epoch_grad_sq = 0.0
+            epoch_grad_count = 0
             if epoch < start_revision : 
                 self.model.train()
                 epoch_start_time = time.time()
@@ -371,7 +386,17 @@ class TrainRevision:
                     num_step+=len(outputs_misclassified)
                     samples_used+=len(outputs_misclassified)
                     loss.backward()
+                    # grad norm (for adaptive_grad)
+                    total_norm_sq = 0.0
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2).item()
+                            total_norm_sq += param_norm * param_norm
+                    batch_grad_norm = total_norm_sq ** 0.5
                     optimizer.step()
+                    # accumulate epoch grad norm
+                    epoch_grad_sq += batch_grad_norm * batch_grad_norm
+                    epoch_grad_count += 1
 
                     running_loss += loss.item()
 
@@ -412,6 +437,11 @@ class TrainRevision:
                 scheduler.step(val_loss)
                 epoch_test_accuracies.append(accuracy)
                 epoch_test_losses.append(val_loss)
+                # record val loss for scheduler
+                self.val_loss_hist.append(val_loss)
+                if epoch_grad_count > 0:
+                    mean_grad_norm = (epoch_grad_sq / max(1, epoch_grad_count)) ** 0.5
+                    self.grad_norm_hist.append(mean_grad_norm)
 
             else:
                 self.model.train()
@@ -480,6 +510,7 @@ class TrainRevision:
                 scheduler.step(val_loss)
                 epoch_test_accuracies.append(accuracy)
                 epoch_test_losses.append(val_loss)
+                self.val_loss_hist.append(val_loss)
             
             samples_used_per_epoch.append(samples_used)
 
@@ -744,7 +775,17 @@ class TrainRevision:
         num_step = 0
         samples_used_per_epoch = []
         for epoch in range(self.epochs):
+            if self.threshold_scheduler is not None:
+                state = {
+                    "val_loss_hist": self.val_loss_hist,
+                    "grad_norm_hist": self.grad_norm_hist,
+                    "tau_hist": self.tau_hist,
+                }
+                self.threshold = self.threshold_scheduler(epoch, state)
+                self.tau_hist.append(self.threshold)
             samples_used = 0
+            epoch_grad_sq = 0.0
+            epoch_grad_count = 0
             if epoch < start_revision : 
                 self.model.train()
                 epoch_start_time = time.time()
@@ -783,7 +824,15 @@ class TrainRevision:
                     num_step+=len(outputs_misclassified)
                     samples_used+=len(outputs_misclassified)
                     loss.backward()
+                    total_norm_sq = 0.0
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2).item()
+                            total_norm_sq += param_norm * param_norm
+                    batch_grad_norm = total_norm_sq ** 0.5
                     optimizer.step()
+                    epoch_grad_sq += batch_grad_norm * batch_grad_norm
+                    epoch_grad_count += 1
 
                     running_loss += loss.item()
 
@@ -824,6 +873,10 @@ class TrainRevision:
                 scheduler.step(val_loss)
                 epoch_test_accuracies.append(accuracy)
                 epoch_test_losses.append(val_loss)
+                self.val_loss_hist.append(val_loss)
+                if epoch_grad_count > 0:
+                    mean_grad_norm = (epoch_grad_sq / max(1, epoch_grad_count)) ** 0.5
+                    self.grad_norm_hist.append(mean_grad_norm)
 
             else:
                 self.model.train()
@@ -887,6 +940,7 @@ class TrainRevision:
                 scheduler.step(val_loss)
                 epoch_test_accuracies.append(accuracy)
                 epoch_test_losses.append(val_loss)
+                self.val_loss_hist.append(val_loss)
             
             samples_used_per_epoch.append(samples_used)
 
@@ -1584,7 +1638,17 @@ class TrainRevision:
         num_step = 0
         samples_used_per_epoch = []
         for epoch in range(self.epochs):
+            if self.threshold_scheduler is not None:
+                state = {
+                    "val_loss_hist": self.val_loss_hist,
+                    "grad_norm_hist": self.grad_norm_hist,
+                    "tau_hist": self.tau_hist,
+                }
+                self.threshold = self.threshold_scheduler(epoch, state)
+                self.tau_hist.append(self.threshold)
             samples_used = 0
+            epoch_grad_sq = 0.0
+            epoch_grad_count = 0
             if epoch < start_revision : 
                 self.model.train()
                 epoch_start_time = time.time()
@@ -1623,7 +1687,15 @@ class TrainRevision:
                     num_step+=len(outputs_misclassified)
                     samples_used+=len(outputs_misclassified)
                     loss.backward()
+                    total_norm_sq = 0.0
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2).item()
+                            total_norm_sq += param_norm * param_norm
+                    batch_grad_norm = total_norm_sq ** 0.5
                     optimizer.step()
+                    epoch_grad_sq += batch_grad_norm * batch_grad_norm
+                    epoch_grad_count += 1
 
                     running_loss += loss.item()
 
@@ -1664,6 +1736,10 @@ class TrainRevision:
                 scheduler.step(val_loss)
                 epoch_test_accuracies.append(accuracy)
                 epoch_test_losses.append(val_loss)
+                self.val_loss_hist.append(val_loss)
+                if epoch_grad_count > 0:
+                    mean_grad_norm = (epoch_grad_sq / max(1, epoch_grad_count)) ** 0.5
+                    self.grad_norm_hist.append(mean_grad_norm)
 
             else:
                 self.model.train()
@@ -1727,6 +1803,7 @@ class TrainRevision:
                 scheduler.step(val_loss)
                 epoch_test_accuracies.append(accuracy)
                 epoch_test_losses.append(val_loss)
+                self.val_loss_hist.append(val_loss)
             
             samples_used_per_epoch.append(samples_used)
 

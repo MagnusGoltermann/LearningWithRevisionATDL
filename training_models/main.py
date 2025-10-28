@@ -6,6 +6,7 @@ from data import load_cifar100, load_mnist, load_imagenet, load_cityscapes, load
 from data import load_cifar100, load_mnist, load_imagenet, load_cityscapes, load_cifar10, load_medmnist3D, load_cub2011, load_aircraft, load_flowers
 from baseline import train_baseline, train_baseline_noisy
 from selective_gradient import TrainRevision
+from threshold_scheduler import get_threshold_scheduler
 from test import test_model
 from longtail_train import train_baseline_longtail, train_with_revision_longtail
 
@@ -23,7 +24,19 @@ def main():
     parser.add_argument("--pretrained", action="store_true", help="Use pretrained versions (applies to torchvision models, not MAE)")
     parser.add_argument("--mae_checkpoint", type=str, default=None, help="Path to MAE pretrained checkpoint file (used with --model mae_vit_b_16)")
     parser.add_argument("--save_path", type=str, help="to save graphs")
-    parser.add_argument("--threshold", type=float, help="threshold to remove samples")
+    # Threshold scheduling
+    parser.add_argument("--threshold-method", dest="threshold_method", type=str,
+                        choices=["fixed","linear","cosine","exp","adaptive_val","adaptive_grad","custom"],
+                        default="fixed",
+                        help="Strategy to compute dynamic tau per epoch (DBPD only)")
+    parser.add_argument("--tau-min", dest="tau_min", type=float, default=0.1,
+                        help="Minimum tau (also used as fixed tau for non-DBPD modes)")
+    parser.add_argument("--tau-max", dest="tau_max", type=float, default=0.9,
+                        help="Maximum tau")
+    parser.add_argument("--cosine-warmup-epochs", dest="cosine_warmup_epochs", type=int, default=0,
+                        help="Warmup epochs for cosine scheduler")
+    parser.add_argument("--exp-k", dest="exp_k", type=float, default=5.0,
+                        help="Exponential scheduler sharpness")
     parser.add_argument("--epoch_threshold", type=int, help="threshold to reintroduce correct samples in epoch")
     parser.add_argument("--dataset", type=str, help="CIFAR or MNIST")
     parser.add_argument("--batch_size", type=int, help="32,64,128 etc.")
@@ -142,10 +155,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
+    # Model naming: reflect threshold schedule config
+    threshold_tag = f"{args.threshold_method}_{args.tau_min}-{args.tau_max}"
     if args.pretrained:
-        args.model = args.model + "_" + "pretrained" + "_" + str(args.threshold)
+        args.model = args.model + "_" + "pretrained" + "_" + threshold_tag
     else:
-        args.model = args.model + "_" + str(args.threshold)
+        args.model = args.model + "_" + threshold_tag
 
     if args.mode == "baseline":
         args.model = args.model + "_" + "baseline"
@@ -154,7 +169,8 @@ def main():
         if args.mode == "baseline":
             trained_model = train_baseline_longtail(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, cls_num_list)
         elif args.mode == "train_with_revision":
-            trained_model = train_with_revision_longtail(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold, args.start_revision, args.task, cls_num_list)
+            threshold_scheduler = get_threshold_scheduler(args, args.epoch)
+            trained_model = train_with_revision_longtail(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, args.start_revision, args.task, cls_num_list, threshold_scheduler=threshold_scheduler)
 
     else: 
         if args.mode == "baseline":
@@ -164,15 +180,16 @@ def main():
             else:
                 trained_model = train_baseline(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.task, cls_num_list)
         elif args.mode == "selective_gradient":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print("Training with selective gradient updates...")
             trained_model = train_revision.train_selective()
         elif args.mode == "selective_epoch":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print(f"Reintroducing correct examples and training...")
             trained_model = train_revision.train_selective_epoch()
         elif args.mode == "train_with_revision":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            threshold_scheduler = get_threshold_scheduler(args, args.epoch)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, threshold_scheduler=threshold_scheduler)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             if args.noisy:
                 trained_model, num_step = train_revision.train_with_noisy_revision(args.start_revision, args.task, cls_num_list)
@@ -180,7 +197,7 @@ def main():
                 trained_model, num_step = train_revision.train_with_revision(args.start_revision, args.task, cls_num_list)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_random":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             if args.noisy:
                 trained_model, num_step = train_revision.train_with_noisy_random(args.start_revision, args.task)
@@ -188,12 +205,13 @@ def main():
                 trained_model, num_step = train_revision.train_with_random(args.start_revision, args.task)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_revision_3d":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            threshold_scheduler = get_threshold_scheduler(args, args.epoch)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, threshold_scheduler=threshold_scheduler)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             trained_model, num_step = train_revision.train_with_revision_3d(args.start_revision, args.task)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_percentage":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             if args.noisy:
                 trained_model, num_step = train_revision.train_with_noisy_percentage(args.start_revision)
@@ -201,22 +219,22 @@ def main():
                 trained_model, num_step = train_revision.train_with_percentage(args.start_revision)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_inv_lin":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             trained_model, num_step = train_revision.train_with_inverse_linear(args.start_revision, data_size)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_log":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             trained_model, num_step = train_revision.train_with_log(args.start_revision, data_size)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_adaptive":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             trained_model, num_step = train_revision.train_with_adaptive(args.start_revision, args.task, cls_num_list, args.interval, args.increment)
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_alternative":
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.threshold)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min)
             trained_model, num_step = train_revision.train_with_alternative(args.start_revision, args.task, cls_num_list)
             print("Number of steps : ", num_step)
     

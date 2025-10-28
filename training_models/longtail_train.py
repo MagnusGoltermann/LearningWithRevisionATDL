@@ -37,7 +37,7 @@ class LDAMLoss(nn.Module):
         return F.cross_entropy(self.s*output, target, weight=self.weight)
     
 
-def train_with_revision_longtail(model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, start_revision, task, cls_num_list):
+def train_with_revision_longtail(model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, start_revision, task, cls_num_list, threshold_scheduler=None):
 
     save_path = save_path
     model.to(device)
@@ -64,7 +64,19 @@ def train_with_revision_longtail(model_name, model, train_loader, test_loader, d
     epoch_test_losses = []
     time_per_epoch = []
     start_time = time.time()
+    val_loss_hist = []
+    grad_norm_hist = []
+    tau_hist = []
     for epoch in range(epochs):
+        # update dynamic tau if provided
+        if threshold_scheduler is not None:
+            state = {
+                "val_loss_hist": val_loss_hist,
+                "grad_norm_hist": grad_norm_hist,
+                "tau_hist": tau_hist,
+            }
+            threshold = float(threshold_scheduler(epoch, state))
+            tau_hist.append(threshold)
         if epoch < start_revision : 
             model.train()
             epoch_start_time = time.time()
@@ -75,6 +87,8 @@ def train_with_revision_longtail(model_name, model, train_loader, test_loader, d
             total = 0
             print(f"Epoch [{epoch+1/epochs}]")
             progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc="Training")
+            epoch_grad_sq = 0.0
+            epoch_grad_count = 0
             
             for batch_idx, (inputs, labels) in progress_bar:
                 inputs, labels = inputs.to(device), labels.to(device)
@@ -118,6 +132,15 @@ def train_with_revision_longtail(model_name, model, train_loader, test_loader, d
                 # outputs_misclassified = outputs[mask]
                 loss = criterion(outputs_misclassified, labels_misclassified)
                 loss.backward()
+                # grad norm accumulation
+                total_norm_sq = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2).item()
+                        total_norm_sq += param_norm * param_norm
+                batch_grad_norm = total_norm_sq ** 0.5
+                epoch_grad_sq += batch_grad_norm * batch_grad_norm
+                epoch_grad_count += 1
                 optimizer.step()
 
                 running_loss += loss.item()
@@ -168,6 +191,10 @@ def train_with_revision_longtail(model_name, model, train_loader, test_loader, d
             scheduler.step(val_loss)
             epoch_test_accuracies.append(accuracy)
             epoch_test_losses.append(val_loss)
+            val_loss_hist.append(val_loss)
+            if epoch_grad_count > 0:
+                mean_grad_norm = (epoch_grad_sq / epoch_grad_count) ** 0.5
+                grad_norm_hist.append(mean_grad_norm)
 
         else:
             model.train()

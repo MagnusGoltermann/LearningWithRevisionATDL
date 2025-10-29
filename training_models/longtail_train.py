@@ -66,7 +66,8 @@ def train_with_revision_longtail(model_name, model, train_loader, test_loader, d
     start_time = time.time()
     val_loss_hist = []
     grad_norm_hist = []
-    tau_hist = []
+    # initialize with starting tau so history is non-empty
+    tau_hist = [threshold]
     for epoch in range(epochs):
         # update dynamic tau if provided
         if threshold_scheduler is not None:

@@ -40,7 +40,8 @@ class TrainRevision:
         self.threshold_scheduler = threshold_scheduler
         self.val_loss_hist = []
         self.grad_norm_hist = []
-        self.tau_hist = []
+        # initialize with starting tau so history is non-empty
+        self.tau_hist = [threshold]
 
     def train_selective(self):
         self.model.to(self.device)

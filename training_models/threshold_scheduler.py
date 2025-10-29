@@ -30,7 +30,7 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
 
     if method == "fixed":
         def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             # fixed uses start value but still enforce non-increasing
             candidate = _clamp(tau_min, tau_min, tau_max)
             return min(candidate, last_tau)
@@ -40,7 +40,7 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
         def scheduler(epoch_idx: int, state: Dict) -> float:
             p = progress(epoch_idx)
             candidate = _clamp(tau_min + (tau_max - tau_min) * p, tau_min, tau_max)
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             return min(candidate, last_tau)
         return scheduler
 
@@ -51,14 +51,14 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
             if epoch_idx < warmup and warmup > 0:
                 wp = epoch_idx / max(1, warmup)
                 candidate = _clamp(tau_min + (tau_max - tau_min) * wp, tau_min, tau_max)
-                last_tau = state.get("tau_hist", [tau_min])[-1]
+                last_tau = (state.get("tau_hist") or [tau_min])[-1]
                 return min(candidate, last_tau)
             # cosine over remaining epochs
             denom = max(1, (total_epochs - max(0, warmup)))
             t = (epoch_idx - warmup) / denom
             cos_term = 0.5 * (1 - math.cos(math.pi * max(0.0, min(1.0, t))))
             candidate = _clamp(tau_min + (tau_max - tau_min) * cos_term, tau_min, tau_max)
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             return min(candidate, last_tau)
         return scheduler
 
@@ -70,7 +70,7 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
             # Smooth exponential rise from tau_min to tau_max
             v = 1.0 - math.exp(-k * p)
             candidate = _clamp(tau_min + (tau_max - tau_min) * v, tau_min, tau_max)
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             return min(candidate, last_tau)
         return scheduler
 
@@ -81,7 +81,7 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
 
         def scheduler(epoch_idx: int, state: Dict) -> float:
             hist = state.get("val_loss_hist", [])
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             if len(hist) < 2:
                 return _clamp(last_tau - slow_down, tau_min, tau_max)
             improved = hist[-1] < hist[-2] - 1e-6
@@ -98,7 +98,7 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
 
         def scheduler(epoch_idx: int, state: Dict) -> float:
             hist = state.get("grad_norm_hist", [])
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             if len(hist) < 2:
                 return _clamp(last_tau - slow_down, tau_min, tau_max)
             decreased = hist[-1] < hist[-2] - 1e-6
@@ -111,7 +111,7 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
         # Placeholder: user can later replace via their own import or patch.
         # Enforce non-increasing using provided tau history.
         def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
-            last_tau = state.get("tau_hist", [tau_min])[-1]
+            last_tau = (state.get("tau_hist") or [tau_min])[-1]
             candidate = _clamp(tau_min, tau_min, tau_max)
             return min(candidate, last_tau)
         return scheduler

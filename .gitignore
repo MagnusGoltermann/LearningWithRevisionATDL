@@ -2,7 +2,6 @@ data/
 *.pyc
 *.txt
 *.png
-*/results
 colab_resnet50.py
 results_new
 resnet_pretrained/

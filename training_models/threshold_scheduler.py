@@ -3,10 +3,13 @@ from typing import Callable, Dict
 
 
 def _clamp(value: float, low: float, high: float) -> float:
-    if value < low:
-        return low
-    if value > high:
-        return high
+    # Support inverted ranges by clamping to the unordered bounds
+    lo = min(low, high)
+    hi = max(low, high)
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
     return value
 
 
@@ -27,76 +30,90 @@ def get_threshold_scheduler(args, total_epochs: int) -> Callable[[int, Dict], fl
 
     if method == "fixed":
         def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
-            return _clamp(tau_min, tau_min, tau_max)
+            last_tau = state.get("tau_hist", [tau_min])[-1]
+            # fixed uses start value but still enforce non-increasing
+            candidate = _clamp(tau_min, tau_min, tau_max)
+            return min(candidate, last_tau)
         return scheduler
 
     if method == "linear":
-        def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
+        def scheduler(epoch_idx: int, state: Dict) -> float:
             p = progress(epoch_idx)
-            return _clamp(tau_min + (tau_max - tau_min) * p, tau_min, tau_max)
+            candidate = _clamp(tau_min + (tau_max - tau_min) * p, tau_min, tau_max)
+            last_tau = state.get("tau_hist", [tau_min])[-1]
+            return min(candidate, last_tau)
         return scheduler
 
     if method == "cosine":
         warmup = int(getattr(args, "cosine_warmup_epochs", 0))
 
-        def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
+        def scheduler(epoch_idx: int, state: Dict) -> float:
             if epoch_idx < warmup and warmup > 0:
                 wp = epoch_idx / max(1, warmup)
-                return _clamp(tau_min + (tau_max - tau_min) * wp, tau_min, tau_max)
+                candidate = _clamp(tau_min + (tau_max - tau_min) * wp, tau_min, tau_max)
+                last_tau = state.get("tau_hist", [tau_min])[-1]
+                return min(candidate, last_tau)
             # cosine over remaining epochs
             denom = max(1, (total_epochs - max(0, warmup)))
             t = (epoch_idx - warmup) / denom
             cos_term = 0.5 * (1 - math.cos(math.pi * max(0.0, min(1.0, t))))
-            return _clamp(tau_min + (tau_max - tau_min) * cos_term, tau_min, tau_max)
+            candidate = _clamp(tau_min + (tau_max - tau_min) * cos_term, tau_min, tau_max)
+            last_tau = state.get("tau_hist", [tau_min])[-1]
+            return min(candidate, last_tau)
         return scheduler
 
     if method == "exp":
         k = float(getattr(args, "exp_k", 5.0))
 
-        def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
+        def scheduler(epoch_idx: int, state: Dict) -> float:
             p = progress(epoch_idx)
             # Smooth exponential rise from tau_min to tau_max
             v = 1.0 - math.exp(-k * p)
-            return _clamp(tau_min + (tau_max - tau_min) * v, tau_min, tau_max)
+            candidate = _clamp(tau_min + (tau_max - tau_min) * v, tau_min, tau_max)
+            last_tau = state.get("tau_hist", [tau_min])[-1]
+            return min(candidate, last_tau)
         return scheduler
 
     if method == "adaptive_val":
-        # Heuristic: if validation loss improves, raise tau; else, gently reduce it
-        up_step = 0.05 * (tau_max - tau_min)
-        down_step = 0.02 * (tau_max - tau_min)
+        # Always decrease; decrease faster when validation loss improves
+        fast_down = 0.05 * abs(tau_max - tau_min)
+        slow_down = 0.02 * abs(tau_max - tau_min)
 
         def scheduler(epoch_idx: int, state: Dict) -> float:
             hist = state.get("val_loss_hist", [])
             last_tau = state.get("tau_hist", [tau_min])[-1]
             if len(hist) < 2:
-                # ramp up slowly at the beginning
-                return _clamp(last_tau + up_step, tau_min, tau_max)
+                return _clamp(last_tau - slow_down, tau_min, tau_max)
             improved = hist[-1] < hist[-2] - 1e-6
-            if improved:
-                return _clamp(last_tau + up_step, tau_min, tau_max)
-            return _clamp(last_tau - down_step, tau_min, tau_max)
+            step = fast_down if improved else slow_down
+            candidate = last_tau - step
+            # enforce monotonic decrease and clamp to bounds
+            return _clamp(min(candidate, last_tau), tau_min, tau_max)
         return scheduler
 
     if method == "adaptive_grad":
-        # Heuristic: when grad norm decreases → increase tau; when increases → decrease tau
-        up_step = 0.04 * (tau_max - tau_min)
-        down_step = 0.04 * (tau_max - tau_min)
+        # Always decrease; decrease faster when gradient norm decreases
+        fast_down = 0.04 * abs(tau_max - tau_min)
+        slow_down = 0.02 * abs(tau_max - tau_min)
 
         def scheduler(epoch_idx: int, state: Dict) -> float:
             hist = state.get("grad_norm_hist", [])
             last_tau = state.get("tau_hist", [tau_min])[-1]
             if len(hist) < 2:
-                return _clamp(last_tau + up_step, tau_min, tau_max)
+                return _clamp(last_tau - slow_down, tau_min, tau_max)
             decreased = hist[-1] < hist[-2] - 1e-6
-            if decreased:
-                return _clamp(last_tau + up_step, tau_min, tau_max)
-            return _clamp(last_tau - down_step, tau_min, tau_max)
+            step = fast_down if decreased else slow_down
+            candidate = last_tau - step
+            return _clamp(min(candidate, last_tau), tau_min, tau_max)
         return scheduler
 
     if method == "custom":
-        # Placeholder: user can later replace via their own import or patch
+        # Placeholder: user can later replace via their own import or patch.
+        # Enforce non-increasing using provided tau history.
         def scheduler(epoch_idx: int, state: Dict) -> float:  # noqa: ARG001
-            return _clamp(tau_min, tau_min, tau_max)
+            last_tau = state.get("tau_hist", [tau_min])[-1]
+            candidate = _clamp(tau_min, tau_min, tau_max)
+            return min(candidate, last_tau)
         return scheduler
 
     # Fallback to fixed

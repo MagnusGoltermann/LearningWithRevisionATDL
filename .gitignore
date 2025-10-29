@@ -1,7 +1,5 @@
 data/ 
 *.pyc
-*.txt
-*.png
 colab_resnet50.py
 results_new
 resnet_pretrained/
@@ -11,5 +9,4 @@ training_models/cifar_results
 training_models/cifar_longtail
 training_models/cifar10_results
 resnet_50_200/*.vtp
-*.vtp
 *.h5

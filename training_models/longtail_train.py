@@ -37,7 +37,7 @@ class LDAMLoss(nn.Module):
         return F.cross_entropy(self.s*output, target, weight=self.weight)
     
 
-def train_with_revision_longtail(model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, start_revision, task, cls_num_list, threshold_scheduler=None):
+def train_with_revision_longtail(model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, start_revision, task, cls_num_list, threshold_scheduler=None, threshold_method: str = "fixed"):
 
     save_path = save_path
     model.to(device)
@@ -99,13 +99,23 @@ def train_with_revision_longtail(model_name, model, train_loader, test_loader, d
                     # if task == "segmentation":
                     #     outputs = outputs['out']
                     preds = torch.argmax(outputs, dim=1)
-                    
-                    if threshold == 0:
-                        mask = preds != labels
-                    else:
+                    if threshold_method == "relative":
                         prob = torch.softmax(outputs, dim=1)
-                        correct_class = prob[torch.arange(labels.size(0)), labels]
-                        mask = correct_class < threshold
+                        top2_prob, top2_idx = torch.topk(prob, k=2, dim=1)
+                        top1_prob = top2_prob[:, 0]
+                        top2_prob_val = top2_prob[:, 1]
+                        miscls_mask = preds != labels
+                        correct_top1_mask = preds == labels
+                        margin = top1_prob - top2_prob_val
+                        rel_mask = correct_top1_mask & (margin < threshold)
+                        mask = miscls_mask | rel_mask
+                    else:
+                        if threshold == 0:
+                            mask = preds != labels
+                        else:
+                            prob = torch.softmax(outputs, dim=1)
+                            correct_class = prob[torch.arange(labels.size(0)), labels]
+                            mask = correct_class < threshold
 
                 if not mask.any():
                     continue

@@ -28,7 +28,7 @@ class FocalLoss(nn.Module):
         return focal_loss(F.cross_entropy(input, target, reduction='none', weight=self.weight), self.gamma)
 
 class TrainRevision:
-    def __init__(self, model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, threshold_scheduler=None):
+    def __init__(self, model_name, model, train_loader, test_loader, device, epochs, save_path, threshold, threshold_scheduler=None, threshold_method: str = "fixed"):
         self.model_name = model_name
         self.model = model
         self.train_loader = train_loader
@@ -38,10 +38,33 @@ class TrainRevision:
         self.save_path = save_path
         self.threshold = threshold
         self.threshold_scheduler = threshold_scheduler
+        self.threshold_method = threshold_method
         self.val_loss_hist = []
         self.grad_norm_hist = []
         # initialize with starting tau so history is non-empty
         self.tau_hist = [threshold]
+
+    def _compute_mask(self, outputs, labels):
+        preds = torch.argmax(outputs, dim=1)
+        if self.threshold_method == "relative":
+            prob = torch.softmax(outputs, dim=1)
+            top2_prob, top2_idx = torch.topk(prob, k=2, dim=1)
+            top1_prob = top2_prob[:, 0]
+            top2_prob_val = top2_prob[:, 1]
+            miscls_mask = preds != labels
+            correct_top1_mask = preds == labels
+            margin = top1_prob - top2_prob_val
+            rel_mask = correct_top1_mask & (margin < self.threshold)
+            mask = miscls_mask | rel_mask
+            return mask, preds
+        else:
+            if self.threshold == 0:
+                mask = preds != labels
+            else:
+                prob = torch.softmax(outputs, dim=1)
+                correct_class = prob[torch.arange(labels.size(0)), labels]
+                mask = correct_class < self.threshold
+            return mask, preds
 
     def train_selective(self):
         self.model.to(self.device)
@@ -357,14 +380,7 @@ class TrainRevision:
                     
                     with torch.no_grad():
                         outputs = self.model(inputs)
-                        preds = torch.argmax(outputs, dim=1)
-                        
-                        if self.threshold == 0:
-                            mask = preds != labels
-                        else:
-                            prob = torch.softmax(outputs, dim=1)
-                            correct_class = prob[torch.arange(labels.size(0)), labels]
-                            mask = correct_class < self.threshold
+                        mask, preds = self._compute_mask(outputs, labels)
 
                     if not mask.any():
                         continue
@@ -803,14 +819,7 @@ class TrainRevision:
                     
                     with torch.no_grad():
                         outputs = self.model(inputs)
-                        preds = torch.argmax(outputs, dim=1)
-                        
-                        if self.threshold == 0:
-                            mask = preds != labels
-                        else:
-                            prob = torch.softmax(outputs, dim=1)
-                            correct_class = prob[torch.arange(labels.size(0)), labels]
-                            mask = correct_class < self.threshold
+                        mask, preds = self._compute_mask(outputs, labels)
 
                     if not mask.any():
                         continue
@@ -1451,14 +1460,7 @@ class TrainRevision:
                     
                     with torch.no_grad():
                         outputs = self.model(inputs)
-                        preds = torch.argmax(outputs, dim=1)
-                        
-                        if self.threshold == 0:
-                            mask = preds != labels
-                        else:
-                            prob = torch.softmax(outputs, dim=1)
-                            correct_class = prob[torch.arange(labels.size(0)), labels]
-                            mask = correct_class < self.threshold
+                        mask, preds = self._compute_mask(outputs, labels)
 
                     if not mask.any():
                         continue

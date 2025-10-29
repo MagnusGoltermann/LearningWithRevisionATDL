@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--save_path", type=str, help="to save graphs")
     # Threshold scheduling
     parser.add_argument("--threshold-method", dest="threshold_method", type=str,
-                        choices=["fixed","linear","cosine","exp","adaptive_val","adaptive_grad","custom"],
+                        choices=["fixed","linear","cosine","exp","adaptive_val","adaptive_grad","relative","custom"],
                         default="fixed",
                         help="Strategy to compute dynamic tau per epoch (DBPD only)")
     parser.add_argument("--tau-min", dest="tau_min", type=float, default=0.1,
@@ -170,7 +170,7 @@ def main():
             trained_model = train_baseline_longtail(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, cls_num_list)
         elif args.mode == "train_with_revision":
             threshold_scheduler = get_threshold_scheduler(args, args.epoch)
-            trained_model = train_with_revision_longtail(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, args.start_revision, args.task, cls_num_list, threshold_scheduler=threshold_scheduler)
+            trained_model = train_with_revision_longtail(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, args.start_revision, args.task, cls_num_list, threshold_scheduler=threshold_scheduler, threshold_method=args.threshold_method)
 
     else: 
         if args.mode == "baseline":
@@ -189,7 +189,7 @@ def main():
             trained_model = train_revision.train_selective_epoch()
         elif args.mode == "train_with_revision":
             threshold_scheduler = get_threshold_scheduler(args, args.epoch)
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, threshold_scheduler=threshold_scheduler)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, threshold_scheduler=threshold_scheduler, threshold_method=args.threshold_method)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             if args.noisy:
                 trained_model, num_step = train_revision.train_with_noisy_revision(args.start_revision, args.task, cls_num_list)
@@ -206,7 +206,7 @@ def main():
             print("Number of steps : ", num_step)
         elif args.mode == "train_with_revision_3d":
             threshold_scheduler = get_threshold_scheduler(args, args.epoch)
-            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, threshold_scheduler=threshold_scheduler)
+            train_revision = TrainRevision(args.model, model, train_loader, test_loader, device, args.epoch, args.save_path, args.tau_min, threshold_scheduler=threshold_scheduler, threshold_method=args.threshold_method)
             print(f"Training {args.mode}, will start revision after {args.start_revision}")
             trained_model, num_step = train_revision.train_with_revision_3d(args.start_revision, args.task)
             print("Number of steps : ", num_step)
